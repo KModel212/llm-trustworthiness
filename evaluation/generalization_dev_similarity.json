@@ -1,0 +1,23 @@
+{
+  "old_96": {
+    "threshold": 0.72,
+    "maximum_similarity": {
+      "similarity": 0.6666666666666666,
+      "new_id": "gs_012",
+      "reference_index": 44
+    },
+    "suspicious_count": 0,
+    "suspicious_pairs": []
+  },
+  "frozen_holdout_120": {
+    "threshold": 0.72,
+    "maximum_similarity": {
+      "similarity": 0.688,
+      "new_id": "ga_001",
+      "reference_index": 112
+    },
+    "suspicious_count": 0,
+    "suspicious_pairs": []
+  },
+  "note": "Reference prompts are not written into this report; only indices and ratios are recorded."
+}

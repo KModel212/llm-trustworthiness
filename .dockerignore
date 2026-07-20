@@ -1,0 +1,43 @@
+__pycache__/
+**/__pycache__/
+*.py[cod]
+*.pyo
+
+.git/
+.agents/
+.codex/
+.vscode/
+.idea/
+
+.venv/
+venv/
+env/
+node_modules/
+.ipynb_checkpoints/
+
+.cache/
+**/.cache/
+**/.huggingface/
+**/huggingface/
+
+result/
+results/
+result_dir/
+test_result_docker.csv/
+smoke_e2e/
+test_dataset.csv
+evaluation/
+
+*.log
+*.tmp
+*.bak
+*.zip
+*.tar
+*.tar.gz
+*.tgz
+*.7z
+
+# The production Qwen model is downloaded into /model/weights/Qwen3-8B during
+# Docker build. Local copies are intentionally excluded from build context to
+# avoid transferring 15GB+ through Docker.
+models/
