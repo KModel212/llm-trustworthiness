@@ -1,20 +1,5 @@
 """
 InferenceEngine - vLLM wrapper for the AI Thailand Benchmark 2026 pipeline.
-
-Compatibility:
-  - Qwen3-Instruct      (thinking disabled via chat_template_kwargs when supported)
-  - Qwen2.5-Instruct
-  - Llama-3.x-Instruct
-  - Gemma-3-Instruct
-  - Mistral-Instruct-v0.x
-
-API note: llm.chat() was introduced in vLLM 0.4.0 and is the correct high-level
-API for instruction-tuned models. It automatically applies the tokenizer's
-chat template (tokenizer_config.json -> chat_template), so no manual prompt
-formatting is needed. This is compatible with all models listed above.
-
-For vLLM < 0.4.0, replace llm.chat() with llm.generate() after manually
-applying the tokenizer.apply_chat_template() step.
 """
 
 import os
@@ -26,15 +11,25 @@ from utils.logger import get_logger
 logger = get_logger(__name__)
 
 
+def _is_unsupported_chat_template_kwargs(error: TypeError) -> bool:
+    message = str(error).lower()
+    return (
+        "chat_template_kwargs" in message
+        and (
+            "unexpected" in message
+            or "unsupported" in message
+            or "got an unexpected keyword" in message
+            or "unexpected keyword argument" in message
+        )
+    )
+
+
 class InferenceEngine:
     """
-    Wraps vLLM for deterministic, offline, high-throughput batch inference.
-    Model is loaded strictly from a local path specified by MODEL_PATH.
+    Wraps vLLM for offline, high-throughput batch inference.
     """
 
     def __init__(self):
-        # Lazy import: vLLM is Linux/GPU-only; importing at class level would
-        # break any environment that runs the guardrail-only unit tests on CPU.
         from vllm import LLM, SamplingParams
 
         logger.info(f"Initializing vLLM engine - model: {config.MODEL_PATH}")
@@ -61,48 +56,124 @@ class InferenceEngine:
             logger.exception(f"vLLM initialisation failed: {e}")
             raise
 
-        # Deterministic generation as required by competition rules
+        # Qwen3 non-thinking recommended sampling preset.
         self.sampling_params = SamplingParams(
-            temperature=config.TEMPERATURE,   # 0.0 -> greedy
-            top_p=config.TOP_P,               # 1.0 -> no nucleus truncation
+            temperature=config.TEMPERATURE,
+            top_p=config.TOP_P,
+            top_k=config.TOP_K,
             max_tokens=config.MAX_TOKENS,
+            seed=config.SEED,
             detokenize=True,
         )
-
-        # Load system prompt
-        prompt_path = os.path.join(
-            os.path.dirname(os.path.abspath(__file__)), "prompts", "system_prompt.txt"
+        logger.info(
+            "Generation settings: temperature=%s top_p=%s top_k=%s "
+            "max_tokens=%s seed=%s enable_thinking=%s",
+            config.TEMPERATURE,
+            config.TOP_P,
+            config.TOP_K,
+            config.MAX_TOKENS,
+            config.SEED,
+            config.ENABLE_THINKING,
         )
+
+        # Get tokenizer so we can explicitly apply the chat template ourselves
+        # if llm.chat() cannot forward enable_thinking=False.
+        self.tokenizer = self.llm.get_tokenizer()
+
+        prompt_path = os.path.join(
+            os.path.dirname(os.path.abspath(__file__)),
+            "prompts",
+            "system_prompt.txt",
+        )
+
         try:
             with open(prompt_path, "r", encoding="utf-8") as f:
                 self.system_prompt = f.read().strip()
             logger.info("System prompt loaded successfully.")
         except FileNotFoundError:
-            logger.warning("System prompt file not found - using built-in default.")
+            logger.warning(
+                "System prompt file not found - using built-in default."
+            )
             self.system_prompt = "You are a helpful and safe AI assistant."
 
     # ------------------------------------------------------------------
     def _chat(self, messages: List[List[Dict[str, str]]]):
         """
-        Calls vLLM chat with Qwen3 thinking disabled when the tokenizer template
-        supports it. Older vLLM builds may not accept chat_template_kwargs.
+        Run chat inference with Qwen3 thinking explicitly disabled.
+
+        Preferred path:
+            llm.chat(..., chat_template_kwargs={"enable_thinking": False})
+
+        Compatibility fallback:
+            manually apply tokenizer.apply_chat_template(
+                enable_thinking=False
+            )
+            then call llm.generate().
         """
         try:
             return self.llm.chat(
                 messages=messages,
                 sampling_params=self.sampling_params,
                 use_tqdm=False,
-                chat_template_kwargs={"enable_thinking": False},
+                chat_template_kwargs={
+                    "enable_thinking": config.ENABLE_THINKING
+                },
             )
+
         except TypeError as e:
+            if not _is_unsupported_chat_template_kwargs(e):
+                raise
             logger.warning(
-                "vLLM chat_template_kwargs unsupported; retrying without "
-                f"explicit Qwen3 thinking control: {e}"
+                "Current vLLM does not support chat_template_kwargs in "
+                "llm.chat(); applying chat template manually instead: %s",
+                e,
             )
-            return self.llm.chat(
-                messages=messages,
-                sampling_params=self.sampling_params,
-                use_tqdm=False,
+
+        # IMPORTANT:
+        # Do not retry llm.chat() without enable_thinking=False.
+        # That could silently re-enable Qwen3 thinking mode.
+        prompts = []
+
+        for conversation in messages:
+            prompt = self.tokenizer.apply_chat_template(
+                conversation,
+                tokenize=False,
+                add_generation_prompt=True,
+                enable_thinking=config.ENABLE_THINKING,
+            )
+            prompts.append(prompt)
+
+        return self.llm.generate(
+            prompts=prompts,
+            sampling_params=self.sampling_params,
+            use_tqdm=False,
+        )
+
+    # ------------------------------------------------------------------
+    def _extract_responses(self, outputs) -> List[str]:
+        responses = [
+            out.outputs[0].text
+            for out in outputs
+        ]
+        self._log_unexpected_thinking(responses)
+        return responses
+
+    # ------------------------------------------------------------------
+    def _log_unexpected_thinking(self, responses: List[str]) -> None:
+        if config.ENABLE_THINKING:
+            return
+
+        unexpected_thinking = sum(
+            "<think>" in text or "</think>" in text
+            for text in responses
+        )
+
+        if unexpected_thinking:
+            logger.error(
+                "GENERATION_ERROR: unexpected_think_markers count=%d total=%d "
+                "enable_thinking=False",
+                unexpected_thinking,
+                len(responses),
             )
 
     # ------------------------------------------------------------------
@@ -112,11 +183,9 @@ class InferenceEngine:
         user_wrapped_system: bool = False,
         safer: bool = False,
     ) -> List[List[Dict[str, str]]]:
-        """
-        Wraps each query into a chat-formatted message list.
-        llm.chat() passes this directly to the tokenizer's chat_template.
-        """
+
         system_prompt = self.system_prompt
+
         if safer:
             system_prompt = (
                 f"{self.system_prompt}\n\n"
@@ -150,38 +219,56 @@ class InferenceEngine:
         ]
 
     # ------------------------------------------------------------------
-    def generate(self, queries: List[str], safer: bool = False) -> List[str]:
-        """
-        Runs batched inference via vLLM's chat API.
+    def generate(
+        self,
+        queries: List[str],
+        safer: bool = False,
+    ) -> List[str]:
 
-        Args:
-            queries: Raw user queries (already pre-filtered to SAFE/MEDIUM).
-
-        Returns:
-            List of generated text strings, one per input query.
-        """
         if not queries:
             return []
 
         mode = "safer" if safer else "normal"
-        logger.info(f"vLLM generating {len(queries)} responses ({mode} prompt)...")
+
+        logger.info(
+            f"vLLM generating {len(queries)} responses "
+            f"({mode} prompt)..."
+        )
 
         try:
-            messages = self._build_messages(queries, safer=safer)
+            messages = self._build_messages(
+                queries,
+                safer=safer,
+            )
+
             outputs = self._chat(messages)
-            return [out.outputs[0].text for out in outputs]
+
+            return self._extract_responses(outputs)
+
         except Exception as e:
             logger.exception(
-                "Generation with system-role messages failed; retrying with a "
-                f"user-wrapped system prompt for model compatibility: {e}"
+                "Generation with system-role messages failed; "
+                "retrying with a user-wrapped system prompt: %s",
+                e,
             )
 
         try:
             fallback_messages = self._build_messages(
-                queries, user_wrapped_system=True, safer=safer
+                queries,
+                user_wrapped_system=True,
+                safer=safer,
             )
+
             outputs = self._chat(fallback_messages)
-            return [out.outputs[0].text for out in outputs]
+
+            return self._extract_responses(outputs)
+
         except Exception as e:
-            logger.exception(f"Generation error after fallback: {e}")
-            return ["I encountered an internal error. Please try again."] * len(queries)
+            logger.exception(
+                "Generation error after fallback: %s",
+                e,
+            )
+
+            return [
+                "I encountered an internal error. Please try again."
+            ] * len(queries)

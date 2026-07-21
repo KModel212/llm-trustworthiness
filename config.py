@@ -25,10 +25,14 @@ OUTPUT_PATH = os.environ.get("OUTPUT_PATH", "/result/submission.csv")
 # ---------------------------------------------------------
 # Inference Configuration (vLLM + H100 40GB optimised)
 # ---------------------------------------------------------
-TEMPERATURE = float(os.environ.get("TEMPERATURE", "0.0"))
-TOP_P = float(os.environ.get("TOP_P", "1.0"))
-MAX_TOKENS = _get_int("MAX_TOKENS", 768)
+TEMPERATURE = _get_float("TEMPERATURE", 0.7)
+TOP_P = _get_float("TOP_P", 0.8)
+TOP_K = _get_int("TOP_K", 20)
+MAX_TOKENS = _get_int("MAX_TOKENS", 1536)
+SEED = _get_int("SEED", 42)
 
+# Qwen3 should run with thinking disabled for this benchmark setup.
+ENABLE_THINKING = _get_bool("ENABLE_THINKING", False)
 # --- H100 40GB tuning ---
 # Defaults are conservative for common local instruct models on H100 40GB.
 # The baked fallback model is Qwen3-8B unless MODEL_PATH is overridden.

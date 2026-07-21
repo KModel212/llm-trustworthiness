@@ -18,10 +18,10 @@ class RiskScorer:
     Aggregates signals from all detectors and classifies the query into a risk tier.
 
     Decision logic (in priority order):
-      1. Prompt injection / jailbreak -> HIGH_RISK (refuse; model guardrails bypassed)
-      2. HIGH intent match            -> HIGH_RISK (refuse; explicit harmful request)
-      3. MEDIUM intent match          -> MEDIUM_RISK (pass to model; system prompt handles)
-      4. Everything else              -> SAFE (pass to model unrestricted)
+      1. Clear harmful intent + actionable payload -> HIGH_RISK
+      2. Prompt injection / jailbreak framing alone -> MEDIUM_RISK
+      3. Ambiguous sensitive or dual-use requests -> MEDIUM_RISK
+      4. Everything else -> SAFE
 
     MEDIUM and SAFE queries both proceed to generation - only HIGH_RISK is refused
     pre-generation. This maximises helpfulness for the benchmark.
@@ -80,6 +80,41 @@ class RiskScorer:
             or (jailbreak_count >= 1 and malicious_payload and evidence.action_signals)
         )
 
+    @staticmethod
+    def _has_actionable_harm_payload(tier: str, evidence, actionable_override: bool) -> bool:
+        transform_only = "transform_only" in evidence.safe_context_signals
+        non_actionable_safe = bool(
+            set(evidence.safe_context_signals)
+            & {
+                "education_overview",
+                "defensive",
+                "fictional_nonactionable",
+                "training_or_synthetic",
+            }
+        )
+        harmful_capability = bool(
+            set(evidence.risk_families)
+            & {"Weapons", "Violence", "Malware", "Fraud", "Privacy"}
+        )
+        action = bool(evidence.action_signals)
+        objective = bool(evidence.objective_signals)
+        target = bool(evidence.target_signals)
+
+        if transform_only and not actionable_override:
+            return False
+        if tier == "HIGH" and not (non_actionable_safe and not actionable_override):
+            return True
+        return bool(
+            harmful_capability
+            and action
+            and (
+                objective
+                or target
+                or actionable_override
+                or evidence.malicious_signal_count >= 2
+            )
+        )
+
     def score(self, raw_query: str) -> Dict[str, Any]:
         """
         Processes a raw query and assigns a final RiskLevel through confidence
@@ -115,6 +150,12 @@ class RiskScorer:
         structural_attack = (is_injection and inj_conf >= 0.6) or (is_jailbreak and jb_conf >= 0.6)
         semantic_malicious = self._has_malicious_composition(evidence)
         semantic_jailbreak = self._has_jailbreak_composition(evidence, is_injection, is_jailbreak)
+        attack_framing = structural_attack or semantic_jailbreak
+        actionable_harm_payload = self._has_actionable_harm_payload(
+            tier,
+            evidence,
+            actionable_override,
+        )
         semantic_high = (
             semantic_score is not None
             and semantic_score >= config.THAI_SAFETY_HIGH_THRESHOLD
@@ -126,7 +167,11 @@ class RiskScorer:
         if intent == "General Benign" and evidence.primary_family:
             intent = evidence.primary_family
 
-        if structural_attack or semantic_jailbreak:
+        if attack_framing and (actionable_harm_payload or semantic_malicious):
+            risk_level = RiskLevel.HIGH_RISK
+        elif attack_framing:
+            risk_level = RiskLevel.MEDIUM_RISK
+        elif actionable_harm_payload and (tier == "HIGH" or semantic_malicious):
             risk_level = RiskLevel.HIGH_RISK
         elif safe_context and not actionable_override:
             if semantic_high and (tier == "HIGH" or semantic_malicious):
@@ -157,7 +202,9 @@ class RiskScorer:
             f"semantic_objectives={evidence.objective_signals} "
             f"semantic_targets={evidence.target_signals} "
             f"semantic_evasion={evidence.evasion_signals} "
-            f"safe_context={safe_context} risk_level={risk_level} decision={decision}"
+            f"safe_context={safe_context} attack_framing={attack_framing} "
+            f"actionable_harm_payload={actionable_harm_payload} "
+            f"risk_level={risk_level} decision={decision}"
         )
 
         return {
@@ -180,4 +227,6 @@ class RiskScorer:
             "matched_jailbreak_signals": evidence.jailbreak_signals,
             "semantic_risk_families": evidence.risk_families,
             "semantic_malicious_signal_count": evidence.malicious_signal_count,
+            "attack_framing": attack_framing,
+            "actionable_harm_payload": actionable_harm_payload,
         }

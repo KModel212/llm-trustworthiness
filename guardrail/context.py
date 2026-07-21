@@ -32,6 +32,14 @@ class SafetyContext:
             rf"(?:{transform}|{educational}|{defensive})",
             re.IGNORECASE,
         )
+        self.additional_safe_context_pattern = re.compile(
+            r"\b(?:secure coding|vulnerability explanation|incident response|"
+            r"malware analysis|ransomware analysis|for detection|red[- ]?team|"
+            r"prompt[- ]?injection analysis|jailbreak analysis|guardrail evaluation|"
+            r"kill a python process|kill a process|terminate a process|"
+            r"stop a service|authorized administration)\b",
+            re.IGNORECASE,
+        )
         self.actionable_override_pattern = re.compile(
             r"\b(step[- ]?by[- ]?step|ทีละขั้น|ละเอียด|real|จริง|ใช้งานได้จริง|"
             r"โค้ดพร้อมใช้|ตรวจจับยาก|stealth|without being caught|ไม่ให้จับได้|"
@@ -77,6 +85,7 @@ class SafetyContext:
             return False
         return (
             bool(self.safe_context_pattern.search(text))
+            or bool(self.additional_safe_context_pattern.search(text))
             or bool(self.thai_defensive_context_pattern.search(text))
             or any(phrase in text for phrase in self.thai_safe_phrases)
         )

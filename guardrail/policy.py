@@ -58,8 +58,11 @@ class RefusalPolicy:
 
     def get_refusal(self, risk_data: Dict[str, Any]) -> str:
         """Returns a deterministic, contextual refusal string."""
+        intent = risk_data.get("intent", "General Benign")
+        if intent in self.TEMPLATES:
+            return self.TEMPLATES[intent]
+
         if risk_data.get("is_jailbreak") or risk_data.get("is_injection"):
             return self.JAILBREAK_REFUSAL
 
-        intent = risk_data.get("intent", "General Benign")
         return self.TEMPLATES.get(intent, self.DEFAULT_REFUSAL)

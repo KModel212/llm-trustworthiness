@@ -22,7 +22,7 @@ from utils.io import load_dataset, save_submission
 from utils.progress import report_progress
 from guardrail.risk_scorer import RiskScorer
 from guardrail.policy import RefusalPolicy
-from guardrail.response_validator import ResponseValidator
+from guardrail.response_validator import ResponseStatus, ResponseValidator
 from model import InferenceEngine
 
 logger = get_logger(__name__)
@@ -61,6 +61,9 @@ def main() -> int:
     generated_count = 0
     refused_count = 0
     internal_error_count = 0
+    generation_truncated_count = 0
+    empty_output_count = 0
+    post_generation_safety_refusal_count = 0
 
     try:
         # -- 1. Load dataset before any model initialisation ------------------
@@ -166,6 +169,12 @@ def main() -> int:
                 final_responses[idx] = validator.validate_and_clean(
                     raw_output, original_query
                 )
+                if validator.last_status == ResponseStatus.GENERATION_TRUNCATED:
+                    generation_truncated_count += 1
+                elif validator.last_status == ResponseStatus.EMPTY_OUTPUT:
+                    empty_output_count += 1
+                elif validator.last_status == ResponseStatus.SAFETY_REFUSAL:
+                    post_generation_safety_refusal_count += 1
                 completed += 1
 
             save_submission(_submission_rows(ids, final_responses), config.OUTPUT_PATH)
@@ -177,6 +186,14 @@ def main() -> int:
         if generation_total:
             logger.info(
                 f"GENERATION_COMPLETED rows={generated_count + internal_error_count}"
+            )
+            logger.info(
+                "GENERATION_STATUS "
+                f"ok={generated_count - generation_truncated_count - empty_output_count - post_generation_safety_refusal_count} "
+                f"safety_refusal={post_generation_safety_refusal_count} "
+                f"generation_truncated={generation_truncated_count} "
+                f"empty_output={empty_output_count} "
+                f"internal_error={internal_error_count}"
             )
         if generated_count and fallback_count:
             logger.warning(
