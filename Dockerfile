@@ -17,11 +17,9 @@ ENV THAI_SAFETY_MODEL_PATH=/models/thai-safety-classifier
 
 WORKDIR /app
 
-COPY requirements.txt .
-RUN python3 -m pip install --no-cache-dir -r requirements.txt
-
 COPY scripts/download_models.py ./scripts/download_models.py
-RUN --mount=type=cache,target=/root/.cache/huggingface \
+RUN python3 -m pip install --no-cache-dir "huggingface_hub>=1.5.0,<2.0"
+RUN --mount=type=cache,target=/root/.cache/huggingface,sharing=locked \
     HF_HUB_OFFLINE=0 TRANSFORMERS_OFFLINE=0 python3 scripts/download_models.py \
     --qwen-model-id ${QWEN_MODEL_ID} \
     --qwen-revision ${QWEN_REVISION} \
@@ -29,6 +27,9 @@ RUN --mount=type=cache,target=/root/.cache/huggingface \
     --thai-safety-model-id ${THAI_SAFETY_MODEL_ID} \
     --thai-safety-revision ${THAI_SAFETY_REVISION} \
     --thai-safety-output-dir ${THAI_SAFETY_MODEL_PATH}
+
+COPY requirements.txt .
+RUN python3 -m pip install --no-cache-dir -r requirements.txt
 
 ENV HF_HUB_OFFLINE=1
 ENV TRANSFORMERS_OFFLINE=1

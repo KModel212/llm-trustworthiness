@@ -33,6 +33,7 @@ SEED = _get_int("SEED", 42)
 
 # Qwen3 should run with thinking disabled for this benchmark setup.
 ENABLE_THINKING = _get_bool("ENABLE_THINKING", False)
+
 # --- H100 40GB tuning ---
 # Defaults are conservative for common local instruct models on H100 40GB.
 # The baked fallback model is Qwen3-8B unless MODEL_PATH is overridden.

@@ -36,8 +36,20 @@ class SafetyContext:
             r"\b(?:secure coding|vulnerability explanation|incident response|"
             r"malware analysis|ransomware analysis|for detection|red[- ]?team|"
             r"prompt[- ]?injection analysis|jailbreak analysis|guardrail evaluation|"
+            r"security awareness|fraud prevention|prevention example|policy comparison|"
+            r"without harmful instructions|without actionable instructions|"
+            r"no production method|no code|not real|fictional critique|"
             r"kill a python process|kill a process|terminate a process|"
-            r"stop a service|authorized administration)\b",
+            r"stop a service|authorized administration)\b|"
+            r"(?:\u0e25\u0e14\u0e04\u0e27\u0e32\u0e21\u0e40\u0e2a\u0e35\u0e48\u0e22\u0e07|"
+            r"\u0e2a\u0e31\u0e07\u0e40\u0e01\u0e15|"
+            r"\u0e40\u0e01\u0e47\u0e1a\u0e2b\u0e25\u0e31\u0e01\u0e10\u0e32\u0e19|"
+            r"\u0e41\u0e08\u0e49\u0e07(?:\u0e04\u0e27\u0e32\u0e21|\u0e2b\u0e19\u0e48\u0e27\u0e22|\u0e15\u0e33\u0e23\u0e27\u0e08|\u0e0a\u0e48\u0e2d\u0e07)|"
+            r"\u0e44\u0e21\u0e48\u0e40\u0e2d\u0e32\u0e42\u0e04\u0e49\u0e14|"
+            r"\u0e44\u0e21\u0e48\u0e21\u0e35\u0e42\u0e04\u0e49\u0e14|"
+            r"\u0e44\u0e21\u0e48\u0e25\u0e07.{0,16}\u0e27\u0e34\u0e18\u0e35\u0e1c\u0e25\u0e34\u0e15|"
+            r"\u0e44\u0e21\u0e48\u0e43\u0e0a\u0e48.{0,12}\u0e08\u0e23\u0e34\u0e07|"
+            r"\u0e44\u0e21\u0e48\u0e2a\u0e23\u0e49\u0e32\u0e07.{0,24}\u0e08\u0e23\u0e34\u0e07)",
             re.IGNORECASE,
         )
         self.actionable_override_pattern = re.compile(
@@ -61,6 +73,16 @@ class SafetyContext:
             r"\u0e44\u0e21\u0e48\u0e43\u0e2b\u0e49\u0e42\u0e14\u0e19\u0e08\u0e31\u0e1a|"
             r"\u0e44\u0e21\u0e48\u0e43\u0e2b\u0e49\u0e43\u0e04\u0e23\u0e23\u0e39\u0e49|"
             r"\u0e41\u0e19\u0e1a\u0e40\u0e19\u0e35\u0e22\u0e19)",
+            re.IGNORECASE,
+        )
+        self.negated_override_suppress_pattern = re.compile(
+            r"\b(?:not real|no code|without code|no production method|"
+            r"without harmful instructions|without actionable instructions)\b|"
+            r"(?:\u0e44\u0e21\u0e48\u0e40\u0e2d\u0e32\u0e42\u0e04\u0e49\u0e14|"
+            r"\u0e44\u0e21\u0e48\u0e21\u0e35\u0e42\u0e04\u0e49\u0e14|"
+            r"\u0e44\u0e21\u0e48\u0e25\u0e07.{0,16}\u0e27\u0e34\u0e18\u0e35\u0e1c\u0e25\u0e34\u0e15|"
+            r"\u0e44\u0e21\u0e48\u0e43\u0e0a\u0e48.{0,12}\u0e08\u0e23\u0e34\u0e07|"
+            r"\u0e44\u0e21\u0e48\u0e2a\u0e23\u0e49\u0e32\u0e07.{0,24}\u0e08\u0e23\u0e34\u0e07)",
             re.IGNORECASE,
         )
         self.thai_safe_phrases = (
@@ -93,10 +115,15 @@ class SafetyContext:
     def has_actionable_override(self, text: str) -> bool:
         if not text:
             return False
-        return bool(
-            self.actionable_override_pattern.search(text)
-            or self.evasion_override_pattern.search(text)
-        )
+        has_evasion_override = bool(self.evasion_override_pattern.search(text))
+        has_actionable_override = bool(self.actionable_override_pattern.search(text))
+        if (
+            has_actionable_override
+            and not has_evasion_override
+            and self.negated_override_suppress_pattern.search(text)
+        ):
+            return False
+        return has_actionable_override or has_evasion_override
 
     def reduces_risk(self, text: str) -> bool:
         return self.has_safe_context(text) and not self.has_actionable_override(text)

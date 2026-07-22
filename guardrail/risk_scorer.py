@@ -62,6 +62,22 @@ class RiskScorer:
         )
 
     @staticmethod
+    def _has_explicit_malicious_evidence(evidence, actionable_override: bool) -> bool:
+        explicit_objectives = {
+            "steal_credentials",
+            "harm_person",
+            "unauthorized_access",
+            "extort_disrupt",
+            "covert_theft_or_abuse",
+            "money_laundering",
+        }
+        return bool(
+            set(evidence.objective_signals) & explicit_objectives
+            or evidence.evasion_signals
+            or actionable_override
+        )
+
+    @staticmethod
     def _has_jailbreak_composition(evidence, is_injection: bool, is_jailbreak: bool) -> bool:
         jailbreak_count = len(evidence.jailbreak_signals)
         malicious_payload = bool(
@@ -81,15 +97,63 @@ class RiskScorer:
         )
 
     @staticmethod
+    def _has_adversarial_bypass_intent(evidence, actionable_harm_payload: bool) -> bool:
+        bypass_signals = set(getattr(evidence, "adversarial_bypass_signals", []))
+        jailbreak_signals = set(evidence.jailbreak_signals)
+        harmful_payload = bool(
+            actionable_harm_payload
+            or evidence.risk_families
+            or evidence.objective_signals
+            or evidence.evasion_signals
+        )
+        extraction = bool(
+            bypass_signals & {"hidden_instruction_extraction"}
+            or jailbreak_signals & {"hidden_prompt_request"}
+        )
+        explicit_hierarchy_attack = bool(
+            bypass_signals
+            & {
+                "fake_authority_claim",
+                "safety_policy_suspension",
+                "unrestricted_mode",
+                "decode_translate_and_obey",
+                "gradual_escalation",
+            }
+        )
+        composed_hierarchy_attack = bool(
+            (jailbreak_signals & {"fake_authority", "template_injection", "smuggling"})
+            or (
+                jailbreak_signals & {"safety_suspension", "roleplay_bypass"}
+                and harmful_payload
+            )
+        )
+
+        return bool(
+            extraction
+            or (explicit_hierarchy_attack and harmful_payload)
+            or composed_hierarchy_attack
+        )
+
+    @staticmethod
     def _has_actionable_harm_payload(tier: str, evidence, actionable_override: bool) -> bool:
         transform_only = "transform_only" in evidence.safe_context_signals
-        non_actionable_safe = bool(
+        strong_safe_context = bool(
             set(evidence.safe_context_signals)
             & {
                 "education_overview",
                 "defensive",
                 "fictional_nonactionable",
                 "training_or_synthetic",
+                "transform_only",
+            }
+        )
+        protective_safe_context = bool(
+            set(evidence.safe_context_signals)
+            & {
+                "defensive",
+                "fictional_nonactionable",
+                "training_or_synthetic",
+                "transform_only",
             }
         )
         harmful_capability = bool(
@@ -99,19 +163,33 @@ class RiskScorer:
         action = bool(evidence.action_signals)
         objective = bool(evidence.objective_signals)
         target = bool(evidence.target_signals)
+        evasion = bool(evidence.evasion_signals)
+        explicit_malicious = RiskScorer._has_explicit_malicious_evidence(
+            evidence,
+            actionable_override,
+        )
 
         if transform_only and not actionable_override:
             return False
-        if tier == "HIGH" and not (non_actionable_safe and not actionable_override):
+        if (
+            protective_safe_context
+            and not actionable_override
+            and not evasion
+        ):
+            return False
+        if strong_safe_context and not explicit_malicious:
+            return False
+        if tier == "HIGH" and not (strong_safe_context and not explicit_malicious):
             return True
         return bool(
             harmful_capability
             and action
             and (
                 objective
-                or target
+                or evasion
                 or actionable_override
-                or evidence.malicious_signal_count >= 2
+                or (target and not strong_safe_context)
+                or (evidence.malicious_signal_count >= 3 and not strong_safe_context)
             )
         )
 
@@ -149,13 +227,34 @@ class RiskScorer:
         # --- Decision ---
         structural_attack = (is_injection and inj_conf >= 0.6) or (is_jailbreak and jb_conf >= 0.6)
         semantic_malicious = self._has_malicious_composition(evidence)
-        semantic_jailbreak = self._has_jailbreak_composition(evidence, is_injection, is_jailbreak)
-        attack_framing = structural_attack or semantic_jailbreak
         actionable_harm_payload = self._has_actionable_harm_payload(
             tier,
             evidence,
             actionable_override,
         )
+        semantic_malicious = (
+            semantic_malicious
+            and not (
+                safe_context
+                and bool(
+                    set(evidence.safe_context_signals)
+                    & {
+                        "defensive",
+                        "fictional_nonactionable",
+                        "training_or_synthetic",
+                        "transform_only",
+                    }
+                )
+                and not actionable_override
+                and not semantic_evasion
+            )
+        )
+        semantic_jailbreak = self._has_jailbreak_composition(evidence, is_injection, is_jailbreak)
+        adversarial_bypass_intent = self._has_adversarial_bypass_intent(
+            evidence,
+            actionable_harm_payload,
+        )
+        attack_framing = structural_attack or semantic_jailbreak or adversarial_bypass_intent
         semantic_high = (
             semantic_score is not None
             and semantic_score >= config.THAI_SAFETY_HIGH_THRESHOLD
@@ -167,7 +266,9 @@ class RiskScorer:
         if intent == "General Benign" and evidence.primary_family:
             intent = evidence.primary_family
 
-        if attack_framing and (actionable_harm_payload or semantic_malicious):
+        if adversarial_bypass_intent:
+            risk_level = RiskLevel.HIGH_RISK
+        elif attack_framing and (actionable_harm_payload or semantic_malicious):
             risk_level = RiskLevel.HIGH_RISK
         elif attack_framing:
             risk_level = RiskLevel.MEDIUM_RISK
@@ -202,6 +303,7 @@ class RiskScorer:
             f"semantic_objectives={evidence.objective_signals} "
             f"semantic_targets={evidence.target_signals} "
             f"semantic_evasion={evidence.evasion_signals} "
+            f"semantic_bypass={evidence.adversarial_bypass_signals} "
             f"safe_context={safe_context} attack_framing={attack_framing} "
             f"actionable_harm_payload={actionable_harm_payload} "
             f"risk_level={risk_level} decision={decision}"
@@ -225,8 +327,10 @@ class RiskScorer:
             "matched_evasion_signals": evidence.evasion_signals,
             "matched_safe_context_signals": evidence.safe_context_signals,
             "matched_jailbreak_signals": evidence.jailbreak_signals,
+            "matched_adversarial_bypass_signals": evidence.adversarial_bypass_signals,
             "semantic_risk_families": evidence.risk_families,
             "semantic_malicious_signal_count": evidence.malicious_signal_count,
             "attack_framing": attack_framing,
+            "adversarial_bypass_intent": adversarial_bypass_intent,
             "actionable_harm_payload": actionable_harm_payload,
         }
